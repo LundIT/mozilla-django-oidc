@@ -47,9 +47,9 @@ class OIDCAuthenticationCallbackView(View):
         # normal login), don't call login. This prevents invaliding the user's current CSRF token
         request_user = getattr(self.request, "user", None)
         if (
-                not request_user
-                or not request_user.is_authenticated
-                or request_user != self.user
+            not request_user
+            or not request_user.is_authenticated
+            or request_user != self.user
         ):
             auth.login(self.request, self.user)
 
@@ -59,20 +59,8 @@ class OIDCAuthenticationCallbackView(View):
             "OIDC_RENEW_ID_TOKEN_EXPIRY_SECONDS", 60 * 15
         )
         self.request.session["oidc_id_token_expiration"] = (
-                time.time() + expiration_interval
+            time.time() + expiration_interval
         )
-
-        tok = getattr(self.request, "_oidc_token_response", {})
-
-        # save the refresh_token if the OP gave us one
-        if "refresh_token" in tok:
-            self.request.session["oidc_refresh_token"] = tok["refresh_token"]
-
-        # save access_token + expiration
-        if "access_token" in tok:
-            self.request.session["oidc_access_token"] = tok["access_token"]
-        if "expires_in" in tok:
-            self.request.session["oidc_access_token_expiration"] = time.time() + tok["expires_in"]
 
         return HttpResponseRedirect(self.success_url)
 
@@ -85,9 +73,9 @@ class OIDCAuthenticationCallbackView(View):
             # Delete the state entry also for failed authentication attempts
             # to prevent replay attacks.
             if (
-                    "state" in request.GET
-                    and "oidc_states" in request.session
-                    and request.GET["state"] in request.session["oidc_states"]
+                "state" in request.GET
+                and "oidc_states" in request.session
+                and request.GET["state"] in request.session["oidc_states"]
             ):
                 del request.session["oidc_states"][request.GET["state"]]
                 request.session.save()
