@@ -210,6 +210,10 @@ class OIDCAuthenticationBackend(ModelBackend):
         access_token = token_info.get("access_token")
         refresh_token = token_info.get("refresh_token")
 
+        # log all three tokens
+        LOGGER.debug("Received tokens: id_token=%s, access_token=%s, refresh_token=%s",
+                     id_token, access_token, refresh_token)
+
         payload = self.verify_token(id_token, nonce=nonce)
         if not payload:
             return None
