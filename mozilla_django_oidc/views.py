@@ -74,8 +74,6 @@ class OIDCAuthenticationCallbackView(View):
         if "expires_in" in tok:
             self.request.session["oidc_access_token_expiration"] = time.time() + tok["expires_in"]
 
-        self.request.session.save()
-
         return HttpResponseRedirect(self.success_url)
 
     def get(self, request):
