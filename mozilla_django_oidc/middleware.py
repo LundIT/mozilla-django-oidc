@@ -1,5 +1,6 @@
 import logging
 import time
+import requests
 from re import Pattern as re_Pattern
 from urllib.parse import quote, urlencode
 
@@ -23,28 +24,34 @@ LOGGER = logging.getLogger(__name__)
 
 
 class SessionRefresh(MiddlewareMixin):
-    """Refreshes the session with the OIDC RP after expiry seconds
+    """Refreshes the session with the OIDC RP after expiry seconds.
 
-    For users authenticated with the OIDC RP, verify tokens are still valid and
-    if not, force the user to re-authenticate silently.
-
+    First tries a refresh_token grant; if that fails or no refresh_token is
+    present, falls back to a silent `prompt=none` re-auth.
     """
 
     def __init__(self, get_response):
-        super(SessionRefresh, self).__init__(get_response)
+        super().__init__(get_response)
+        # URLs & endpoints
         self.OIDC_EXEMPT_URLS = self.get_settings("OIDC_EXEMPT_URLS", [])
-        self.OIDC_OP_AUTHORIZATION_ENDPOINT = self.get_settings(
-            "OIDC_OP_AUTHORIZATION_ENDPOINT"
-        )
+        self.OIDC_OP_AUTHORIZATION_ENDPOINT = self.get_settings("OIDC_OP_AUTHORIZATION_ENDPOINT")
+        self.OIDC_OP_TOKEN_ENDPOINT = self.get_settings("OIDC_OP_TOKEN_ENDPOINT")
+        # RP credentials
         self.OIDC_RP_CLIENT_ID = self.get_settings("OIDC_RP_CLIENT_ID")
+        self.OIDC_RP_CLIENT_SECRET = self.get_settings("OIDC_RP_CLIENT_SECRET", None)
+        # State & nonce
         self.OIDC_STATE_SIZE = self.get_settings("OIDC_STATE_SIZE", 32)
-        self.OIDC_AUTHENTICATION_CALLBACK_URL = self.get_settings(
-            "OIDC_AUTHENTICATION_CALLBACK_URL",
-            "oidc_authentication_callback",
-        )
-        self.OIDC_RP_SCOPES = self.get_settings("OIDC_RP_SCOPES", "openid email")
         self.OIDC_USE_NONCE = self.get_settings("OIDC_USE_NONCE", True)
         self.OIDC_NONCE_SIZE = self.get_settings("OIDC_NONCE_SIZE", 32)
+        # Callback & scope
+        self.OIDC_AUTHENTICATION_CALLBACK_URL = self.get_settings(
+            "OIDC_AUTHENTICATION_CALLBACK_URL", "oidc_authentication_callback"
+        )
+        self.OIDC_RP_SCOPES = self.get_settings("OIDC_RP_SCOPES", "openid email")
+        # PKCE settings
+        self.OIDC_USE_PKCE = self.get_settings("OIDC_USE_PKCE", False)
+        self.OIDC_PKCE_CODE_VERIFIER_SIZE = self.get_settings("OIDC_PKCE_CODE_VERIFIER_SIZE", 64)
+        self.OIDC_PKCE_CODE_CHALLENGE_METHOD = self.get_settings("OIDC_PKCE_CODE_CHALLENGE_METHOD", "S256")
 
     @staticmethod
     def get_settings(attr, *args):
@@ -52,68 +59,35 @@ class SessionRefresh(MiddlewareMixin):
 
     @cached_property
     def exempt_urls(self):
-        """Generate and return a set of url paths to exempt from SessionRefresh
-
-        This takes the value of ``settings.OIDC_EXEMPT_URLS`` and appends three
-        urls that mozilla-django-oidc uses. These values can be view names or
-        absolute url paths.
-
-        :returns: list of url paths (for example "/oidc/callback/")
-
-        """
-        exempt_urls = []
-        for url in self.OIDC_EXEMPT_URLS:
-            if not isinstance(url, re_Pattern):
-                exempt_urls.append(url)
-        exempt_urls.extend(
-            [
-                "oidc_authentication_init",
-                "oidc_authentication_callback",
-                "oidc_logout",
-            ]
-        )
-
-        return set(
-            [url if url.startswith("/") else reverse(url) for url in exempt_urls]
-        )
+        exempt = [
+            url if url.startswith("/") else reverse(url)
+            for url in self.OIDC_EXEMPT_URLS
+            if not isinstance(url, re_Pattern)
+        ]
+        exempt += [
+            "oidc_authentication_init",
+            "oidc_authentication_callback",
+            "oidc_logout",
+        ]
+        return set(exempt)
 
     @cached_property
     def exempt_url_patterns(self):
-        """Generate and return a set of url patterns to exempt from SessionRefresh
-
-        This takes the value of ``settings.OIDC_EXEMPT_URLS`` and returns the
-        values that are compiled regular expression patterns.
-
-        :returns: list of url patterns (for example,
-            ``re.compile(r"/user/[0-9]+/image")``)
-        """
-        exempt_patterns = set()
-        for url_pattern in self.OIDC_EXEMPT_URLS:
-            if isinstance(url_pattern, re_Pattern):
-                exempt_patterns.add(url_pattern)
-        return exempt_patterns
+        return {p for p in self.OIDC_EXEMPT_URLS if isinstance(p, re_Pattern)}
 
     def is_refreshable_url(self, request):
-        """Takes a request and returns whether it triggers a refresh examination
-
-        :arg HttpRequest request:
-
-        :returns: boolean
-
-        """
-        # Do not attempt to refresh the session if the OIDC backend is not used
-        backend_session = request.session.get(BACKEND_SESSION_KEY)
-        is_oidc_enabled = True
-        if backend_session:
-            auth_backend = import_string(backend_session)
-            is_oidc_enabled = issubclass(auth_backend, OIDCAuthenticationBackend)
+        backend_path = request.session.get(BACKEND_SESSION_KEY)
+        is_oidc = True
+        if backend_path:
+            backend = import_string(backend_path)
+            is_oidc = issubclass(backend, OIDCAuthenticationBackend)
 
         return (
             request.method == "GET"
             and request.user.is_authenticated
-            and is_oidc_enabled
+            and is_oidc
             and request.path not in self.exempt_urls
-            and not any(pat.match(request.path) for pat in self.exempt_url_patterns)
+            and not any(p.match(request.path) for p in self.exempt_url_patterns)
         )
 
     def process_request(self, request):
@@ -121,82 +95,94 @@ class SessionRefresh(MiddlewareMixin):
             LOGGER.debug("request is not refreshable")
             return
 
-        expiration = request.session.get("oidc_id_token_expiration", 0)
         now = time.time()
+        expiration = request.session.get("oidc_id_token_expiration", 0)
+
         if expiration > now:
-            # The id_token is still valid, so we don't have to do anything.
-            LOGGER.debug("id token is still valid (%s > %s)", expiration, now)
+            LOGGER.debug("id token still valid (%s > %s)", expiration, now)
             return
 
-        LOGGER.debug("id token has expired")
-        # The id_token has expired, so we have to re-authenticate silently.
-        auth_url = self.OIDC_OP_AUTHORIZATION_ENDPOINT
-        client_id = self.OIDC_RP_CLIENT_ID
-        state = get_random_string(self.OIDC_STATE_SIZE)
+        LOGGER.debug("id token expired or missing; attempting token refresh")
 
-        # Build the parameters as if we were doing a real auth handoff, except
-        # we also include prompt=none.
+        # 1) Try the refresh_token grant
+        refresh_token = request.session.get("oidc_refresh_token")
+        if refresh_token:
+            try:
+                tokens = self._refresh_with_refresh_token(refresh_token)
+                self._update_session_tokens(request, tokens, now)
+                LOGGER.debug("successfully refreshed tokens via refresh_token")
+                return
+            except Exception:
+                LOGGER.exception("refresh_token grant failed; falling back to silent auth")
+
+        # 2) Fallback: silent re‐auth via prompt=none
+        return self._perform_silent_auth(request)
+
+    def _refresh_with_refresh_token(self, refresh_token):
+        """Exchange the refresh_token at the OP's token endpoint."""
+        data = {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": self.OIDC_RP_CLIENT_ID,
+        }
+        if self.OIDC_RP_CLIENT_SECRET:
+            data["client_secret"] = self.OIDC_RP_CLIENT_SECRET
+
+        resp = requests.post(self.OIDC_OP_TOKEN_ENDPOINT, data=data)
+        resp.raise_for_status()
+        return resp.json()
+
+    def _update_session_tokens(self, request, tokens, now):
+        """Save new id_token, access_token, (rotated) refresh_token, and expiration."""
+        request.session["oidc_id_token"] = tokens["id_token"]
+        request.session["oidc_access_token"] = tokens.get("access_token")
+        if "refresh_token" in tokens:
+            request.session["oidc_refresh_token"] = tokens["refresh_token"]
+        expires_in = tokens.get("expires_in")
+        if expires_in is not None:
+            request.session["oidc_id_token_expiration"] = now + int(expires_in)
+
+    def _perform_silent_auth(self, request):
+        """Redirect the user silently (`prompt=none`) to re‐authenticate."""
+        LOGGER.debug("performing silent auth with prompt=none")
+        state = get_random_string(self.OIDC_STATE_SIZE)
         params = {
             "response_type": "code",
-            "client_id": client_id,
-            "redirect_uri": absolutify(
-                request, reverse(self.OIDC_AUTHENTICATION_CALLBACK_URL)
-            ),
+            "client_id": self.OIDC_RP_CLIENT_ID,
+            "redirect_uri": absolutify(request, reverse(self.OIDC_AUTHENTICATION_CALLBACK_URL)),
             "state": state,
             "scope": self.OIDC_RP_SCOPES,
             "prompt": "none",
         }
-
+        # include any extra params from settings
         params.update(self.get_settings("OIDC_AUTH_REQUEST_EXTRA_PARAMS", {}))
 
+        # nonce for replay protection
         if self.OIDC_USE_NONCE:
-            nonce = get_random_string(self.OIDC_NONCE_SIZE)
-            params.update({"nonce": nonce})
+            params["nonce"] = get_random_string(self.OIDC_NONCE_SIZE)
 
-        if self.get_settings("OIDC_USE_PKCE", False):
-            code_verifier_length = self.get_settings("OIDC_PKCE_CODE_VERIFIER_SIZE", 64)
-            # Check that code_verifier_length is between the min and max length
-            # defined in https://datatracker.ietf.org/doc/html/rfc7636#section-4.1
-            if not (43 <= code_verifier_length <= 128):
+        # PKCE support
+        code_verifier = None
+        if self.OIDC_USE_PKCE:
+            if not (43 <= self.OIDC_PKCE_CODE_VERIFIER_SIZE <= 128):
                 raise ValueError("code_verifier_length must be between 43 and 128")
+            code_verifier = get_random_string(self.OIDC_PKCE_CODE_VERIFIER_SIZE)
+            code_challenge = generate_code_challenge(code_verifier, self.OIDC_PKCE_CODE_CHALLENGE_METHOD)
+            params["code_challenge"] = code_challenge
+            params["code_challenge_method"] = self.OIDC_PKCE_CODE_CHALLENGE_METHOD
 
-            # Generate code_verifier and code_challenge pair
-            code_verifier = get_random_string(code_verifier_length)
-            code_challenge_method = self.get_settings(
-                "OIDC_PKCE_CODE_CHALLENGE_METHOD", "S256"
-            )
-            code_challenge = generate_code_challenge(
-                code_verifier, code_challenge_method
-            )
-
-            # Append code_challenge to authentication request parameters
-            params.update(
-                {
-                    "code_challenge": code_challenge,
-                    "code_challenge_method": code_challenge_method,
-                }
-            )
-        else:
-            code_verifier = None
-
-        add_state_and_verifier_and_nonce_to_session(
-            request, state, params, code_verifier
-        )
-
+        # stash state, verifier, nonce
+        add_state_and_verifier_and_nonce_to_session(request, state, params, code_verifier)
         request.session["oidc_login_next"] = request.get_full_path()
 
+        # build redirect
         query = urlencode(params, quote_via=quote)
-        redirect_url = "{url}?{query}".format(url=auth_url, query=query)
+        redirect_url = f"{self.OIDC_OP_AUTHORIZATION_ENDPOINT}?{query}"
+
+        # handle AJAX specially
         if request.headers.get("x-requested-with") == "XMLHttpRequest":
-            # Almost all XHR request handling in client-side code struggles
-            # with redirects since redirecting to a page where the user
-            # is supposed to do something is extremely unlikely to work
-            # in an XHR request. Make a special response for these kinds
-            # of requests.
-            # The use of 403 Forbidden is to match the fact that this
-            # middleware doesn't really want the user in if they don't
-            # refresh their session.
             response = JsonResponse({"refresh_url": redirect_url}, status=403)
             response["refresh_url"] = redirect_url
             return response
+
         return HttpResponseRedirect(redirect_url)
