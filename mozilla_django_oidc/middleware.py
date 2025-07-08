@@ -138,6 +138,7 @@ class SessionRefresh(MiddlewareMixin):
         request.session["oidc_access_token"] = tokens.get("access_token")
         if "refresh_token" in tokens:
             request.session["oidc_refresh_token"] = tokens["refresh_token"]
+            print("oidc_refresh_token", tokens["refresh_token"])
         expires_in = tokens.get("expires_in")
         if expires_in is not None:
             request.session["oidc_id_token_expiration"] = now + int(expires_in)
