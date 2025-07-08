@@ -238,6 +238,7 @@ class OIDCAuthenticationBackend(ModelBackend):
         # New: if offline_access was in requested scopes, save the refresh_token by default
         scopes = self.get_settings("OIDC_RP_SCOPES", "").split()
         if "offline_access" in scopes and refresh_token:
+            print("Storing refresh token in session." + str(refresh_token))
             session["oidc_refresh_token"] = refresh_token
 
     def get_or_create_user(self, access_token, id_token, payload):
