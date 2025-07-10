@@ -264,7 +264,7 @@ class OIDCLogoutView(View):
             logout_from_op = self.get_settings("OIDC_OP_LOGOUT_URL_METHOD", "")
             if logout_from_op:
                 logout_url = import_string(logout_from_op)(request)
-
+        print("LOGOUT URL:", logout_url)
         return HttpResponseRedirect(logout_url)
 
     def get(self, request):
