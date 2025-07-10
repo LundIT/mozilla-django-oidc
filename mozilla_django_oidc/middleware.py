@@ -1,5 +1,7 @@
 import logging
 import time
+from urllib.error import HTTPError
+
 import requests
 from re import Pattern as re_Pattern
 from urllib.parse import quote, urlencode
@@ -138,7 +140,21 @@ class SessionRefresh(MiddlewareMixin):
             data["client_secret"] = self.OIDC_RP_CLIENT_SECRET
 
         resp = requests.post(self.OIDC_OP_TOKEN_ENDPOINT, data=data)
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except HTTPError as e:
+            # If the OP tells us the refresh_token is invalid, escalate
+            try:
+                error = resp.json().get("error")
+            except ValueError:
+                error = None
+
+            if resp.status_code == 400 and error == "invalid_grant":
+                # means the refresh_token was revoked or expired
+                raise InvalidRefreshTokenError("Refresh token invalid or expired") from e
+            # any other HTTPError, re-raise and let caller decide
+            raise
+
         return resp.json()
 
     def _update_session_tokens(self, request, tokens, now):
