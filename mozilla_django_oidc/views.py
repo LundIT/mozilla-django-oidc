@@ -256,6 +256,7 @@ class OIDCLogoutView(View):
 
     def post(self, request):
         """Log out the user."""
+        print("POST method called for OIDCLogoutView")
         logout_url = self.redirect_url
 
         if request.user.is_authenticated:
@@ -271,6 +272,7 @@ class OIDCLogoutView(View):
 
     def get(self, request):
         """Log out the user."""
+        print("GET method called for OIDCLogoutView")
         if self.get_settings("ALLOW_LOGOUT_GET_METHOD", False):
             return self.post(request)
         return HttpResponseNotAllowed(["POST"])
