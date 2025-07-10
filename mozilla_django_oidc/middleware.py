@@ -142,9 +142,8 @@ class SessionRefresh(MiddlewareMixin):
         try:
             resp.raise_for_status()
         except HTTPError as e:
-            # log it, then raise a simpler Exception that your outer code will catch
             LOGGER.error("Token endpoint returned %s: %s", resp.status_code, resp.text)
-            raise Exception("refresh_token grant failed") from e
+            return None
 
         return resp.json()
 
