@@ -91,6 +91,7 @@ class SessionRefresh(MiddlewareMixin):
         )
 
     def process_request(self, request):
+        print("SessionRefresh: process_request called")
         if not self.is_refreshable_url(request):
             LOGGER.debug("request is not refreshable")
             return
