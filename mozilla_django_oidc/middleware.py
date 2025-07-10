@@ -112,7 +112,7 @@ class SessionRefresh(MiddlewareMixin):
             except InvalidGrantError:
                 # hard failure → logout
                 LOGGER.info("Refresh token is invalid/inactive; logging user out")
-                return HttpResponseRedirect("oidc_logout")
+                return HttpResponseRedirect("/oidc/logout/")
             except Exception:
                 # other transport/HTTP errors → fall back to silent auth
                 LOGGER.exception("Refresh grant failed; falling back to silent auth")
