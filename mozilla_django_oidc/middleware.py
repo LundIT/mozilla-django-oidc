@@ -112,7 +112,19 @@ class SessionRefresh(MiddlewareMixin):
             except InvalidGrantError:
                 # hard failure → logout
                 LOGGER.info("Refresh token is invalid/inactive; logging user out")
-                return HttpResponseRedirect(reverse("oidc_logout"))
+                logout_url = self.get_settings("LOGOUT_REDIRECT_URL", "/")
+
+                if request.user.is_authenticated:
+                    # Check if a method exists to build the URL to log out the user
+                    # from the OP.
+                    logout_from_op = self.get_settings("OIDC_OP_LOGOUT_URL_METHOD", "")
+                    if logout_from_op:
+                        logout_url = import_string(logout_from_op)(request)
+
+                    # Log out the Django user if they were logged in.
+                    django_logout(request)
+
+                return HttpResponseRedirect(logout_url)
             except Exception:
                 # other transport/HTTP errors → fall back to silent auth
                 LOGGER.exception("Refresh grant failed; falling back to silent auth")
