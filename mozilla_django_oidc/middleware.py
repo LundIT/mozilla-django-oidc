@@ -22,6 +22,9 @@ from mozilla_django_oidc.utils import (
 
 LOGGER = logging.getLogger(__name__)
 
+class InvalidGrantError(Exception):
+    """Raised when the OP tells us the refresh token is no longer active."""
+    pass
 
 class SessionRefresh(MiddlewareMixin):
     """Refreshes the session with the OIDC RP after expiry seconds.
@@ -92,42 +95,42 @@ class SessionRefresh(MiddlewareMixin):
 
     def process_request(self, request):
         if not self.is_refreshable_url(request):
-            LOGGER.debug("request is not subject to OIDC refresh")
             return
 
         now = time.time()
         expiration = request.session.get("oidc_id_token_expiration", 0)
 
-        # Still valid?  Do nothing.
         if expiration > now:
-            LOGGER.debug("id token still valid (%s > %s)", expiration, now)
             return
 
-        LOGGER.debug("id token expired; attempting to refresh or re-auth")
+        LOGGER.debug("ID token expired; attempting refresh…")
 
-        # 1) Try the refresh_token grant if we have one
         refresh_token = request.session.get("oidc_refresh_token")
         if refresh_token:
             try:
                 tokens = self._refresh_with_refresh_token(refresh_token)
-                if tokens:
-                    # only update if tokens is a dict
-                    self._update_session_tokens(request, tokens, now)
-                    LOGGER.debug("successfully refreshed tokens via refresh_token")
-                    return
-                else:
-                    LOGGER.debug("refresh_token grant failed; falling back to silent auth")
+            except InvalidGrantError:
+                # hard failure → logout
+                LOGGER.info("Refresh token is invalid/inactive; logging user out")
+                django_logout(request)
+                request.session.flush()
+                return HttpResponseRedirect(reverse("oidc_authentication_init"))
             except Exception:
-                LOGGER.exception("refresh_token grant failed; will try silent auth")
+                # other transport/HTTP errors → fall back to silent auth
+                LOGGER.exception("Refresh grant failed; falling back to silent auth")
+            else:
+                # success!
+                self._update_session_tokens(request, tokens, now)
+                LOGGER.debug("Successfully refreshed via refresh_token")
+                return
 
-        # 2) Try silent re-auth
+        # nobody got us new tokens → try prompt=none
         response = self._perform_silent_auth(request)
         if response:
-            # for AJAX, _perform_silent_auth returns a JsonResponse
             return response
 
-        # 3) If silent auth didn’t get us a redirect, give up and log the user out
-        LOGGER.info("silent auth failed; logging user out")
+        # silent auth didn’t help → final logout
+        LOGGER.info("Silent auth failed; logging user out")
         django_logout(request)
         request.session.flush()
         return HttpResponseRedirect(reverse("oidc_authentication_init"))
@@ -146,7 +149,22 @@ class SessionRefresh(MiddlewareMixin):
         try:
             resp.raise_for_status()
         except HTTPError as e:
-            LOGGER.error("Token endpoint returned %s: %s", resp.status_code, resp.text)
+            # try to see if it’s specifically an invalid_grant
+            try:
+                err = resp.json()
+                if err.get("error") == "invalid_grant":
+                    # unrecoverable!
+                    raise InvalidGrantError(err.get("error_description", "invalid_grant")) from e
+            except ValueError:
+                # not JSON or unexpected; fall through
+                pass
+
+            # any other HTTP error ⇒ return None to signal a retry via silent auth
+            LOGGER.error(
+                "Token endpoint returned %s: %s",
+                resp.status_code,
+                resp.text,
+            )
             return None
 
         return resp.json()
