@@ -267,6 +267,7 @@ class OIDCLogoutView(View):
             if logout_from_op:
                 print("Using custom logout method:", logout_from_op)
                 logout_url = import_string(logout_from_op)(request)
+            auth.logout(request)
         print("LOGOUT URL:", logout_url)
         return HttpResponseRedirect(logout_url)
 
