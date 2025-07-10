@@ -114,7 +114,7 @@ class SessionRefresh(MiddlewareMixin):
                 LOGGER.info("Refresh token is invalid/inactive; logging user out")
                 django_logout(request)
                 request.session.flush()
-                return HttpResponseRedirect(reverse("oidc_authentication_init"))
+                return HttpResponseRedirect(reverse("oidc_logout"))
             except Exception:
                 # other transport/HTTP errors → fall back to silent auth
                 LOGGER.exception("Refresh grant failed; falling back to silent auth")
