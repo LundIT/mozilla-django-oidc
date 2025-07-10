@@ -3,8 +3,8 @@ import time
 import requests
 from re import Pattern as re_Pattern
 from urllib.parse import quote, urlencode
-
-from django.contrib import auth
+from requests.exceptions import HTTPError
+from django.contrib.auth import BACKEND_SESSION_KEY, logout as django_logout
 from django.http import HttpResponseRedirect, JsonResponse
 from django.urls import reverse
 from django.utils.crypto import get_random_string
@@ -76,7 +76,7 @@ class SessionRefresh(MiddlewareMixin):
         return {p for p in self.OIDC_EXEMPT_URLS if isinstance(p, re_Pattern)}
 
     def is_refreshable_url(self, request):
-        backend_path = request.session.get(auth.BACKEND_SESSION_KEY)
+        backend_path = request.session.get(BACKEND_SESSION_KEY)
         is_oidc = True
         if backend_path:
             backend = import_string(backend_path)
@@ -91,21 +91,21 @@ class SessionRefresh(MiddlewareMixin):
         )
 
     def process_request(self, request):
-        print("SessionRefresh: process_request called")
         if not self.is_refreshable_url(request):
-            LOGGER.debug("request is not refreshable")
+            LOGGER.debug("request is not subject to OIDC refresh")
             return
 
         now = time.time()
         expiration = request.session.get("oidc_id_token_expiration", 0)
 
+        # Still valid?  Do nothing.
         if expiration > now:
             LOGGER.debug("id token still valid (%s > %s)", expiration, now)
             return
 
-        LOGGER.debug("id token expired or missing; attempting token refresh")
+        LOGGER.debug("id token expired; attempting to refresh or re-auth")
 
-        # 1) Try the refresh_token grant
+        # 1) Try the refresh_token grant if we have one
         refresh_token = request.session.get("oidc_refresh_token")
         if refresh_token:
             try:
@@ -114,16 +114,17 @@ class SessionRefresh(MiddlewareMixin):
                 LOGGER.debug("successfully refreshed tokens via refresh_token")
                 return
             except Exception:
-                LOGGER.exception("refresh_token grant failed; falling back to silent auth")
+                LOGGER.exception("refresh_token grant failed; will try silent auth")
 
-        # 2) Fallback: silent re-auth
-        silent_response = self._perform_silent_auth(request)
-        if silent_response:
-            return silent_response
+        # 2) Try silent re-auth
+        response = self._perform_silent_auth(request)
+        if response:
+            # for AJAX, _perform_silent_auth returns a JsonResponse
+            return response
 
-        # 3) Final fallback: logout user
-        LOGGER.info("Silent auth not possible or failed, logging out user")
-        auth.logout(request)
+        # 3) If silent auth didn’t get us a redirect, give up and log the user out
+        LOGGER.info("silent auth failed; logging user out")
+        django_logout(request)
         request.session.flush()
         return HttpResponseRedirect(reverse("oidc_authentication_init"))
 
@@ -138,7 +139,13 @@ class SessionRefresh(MiddlewareMixin):
             data["client_secret"] = self.OIDC_RP_CLIENT_SECRET
 
         resp = requests.post(self.OIDC_OP_TOKEN_ENDPOINT, data=data)
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except HTTPError as e:
+            # log it, then raise a simpler Exception that your outer code will catch
+            LOGGER.error("Token endpoint returned %s: %s", resp.status_code, resp.text)
+            raise Exception("refresh_token grant failed") from e
+
         return resp.json()
 
     def _update_session_tokens(self, request, tokens, now):
