@@ -110,9 +110,13 @@ class SessionRefresh(MiddlewareMixin):
         if refresh_token:
             try:
                 tokens = self._refresh_with_refresh_token(refresh_token)
-                self._update_session_tokens(request, tokens, now)
-                LOGGER.debug("successfully refreshed tokens via refresh_token")
-                return
+                if tokens:
+                    # only update if tokens is a dict
+                    self._update_session_tokens(request, tokens, now)
+                    LOGGER.debug("successfully refreshed tokens via refresh_token")
+                    return
+                else:
+                    LOGGER.debug("refresh_token grant failed; falling back to silent auth")
             except Exception:
                 LOGGER.exception("refresh_token grant failed; will try silent auth")
 
