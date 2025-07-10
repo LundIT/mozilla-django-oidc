@@ -4,7 +4,7 @@ import requests
 from re import Pattern as re_Pattern
 from urllib.parse import quote, urlencode
 
-from django.contrib.auth import BACKEND_SESSION_KEY
+from django.contrib import auth
 from django.http import HttpResponseRedirect, JsonResponse
 from django.urls import reverse
 from django.utils.crypto import get_random_string
@@ -76,7 +76,7 @@ class SessionRefresh(MiddlewareMixin):
         return {p for p in self.OIDC_EXEMPT_URLS if isinstance(p, re_Pattern)}
 
     def is_refreshable_url(self, request):
-        backend_path = request.session.get(BACKEND_SESSION_KEY)
+        backend_path = request.session.get(auth.BACKEND_SESSION_KEY)
         is_oidc = True
         if backend_path:
             backend = import_string(backend_path)
@@ -105,19 +105,27 @@ class SessionRefresh(MiddlewareMixin):
 
         LOGGER.debug("id token expired or missing; attempting token refresh")
 
-        # # 1) Try the refresh_token grant
-        # refresh_token = request.session.get("oidc_refresh_token")
-        # if refresh_token:
-        #     try:
-        #         tokens = self._refresh_with_refresh_token(refresh_token)
-        #         self._update_session_tokens(request, tokens, now)
-        #         LOGGER.debug("successfully refreshed tokens via refresh_token")
-        #         return
-        #     except Exception:
-        #         LOGGER.exception("refresh_token grant failed; falling back to silent auth")
+        # 1) Try the refresh_token grant
+        refresh_token = request.session.get("oidc_refresh_token")
+        if refresh_token:
+            try:
+                tokens = self._refresh_with_refresh_token(refresh_token)
+                self._update_session_tokens(request, tokens, now)
+                LOGGER.debug("successfully refreshed tokens via refresh_token")
+                return
+            except Exception:
+                LOGGER.exception("refresh_token grant failed; falling back to silent auth")
 
-        # 2) Fallback: silent re‐auth via prompt=none
-        return self._perform_silent_auth(request)
+        # 2) Fallback: silent re-auth
+        silent_response = self._perform_silent_auth(request)
+        if silent_response:
+            return silent_response
+
+        # 3) Final fallback: logout user
+        LOGGER.info("Silent auth not possible or failed, logging out user")
+        auth.logout(request)
+        request.session.flush()
+        return HttpResponseRedirect(reverse("oidc_authentication_init"))
 
     def _refresh_with_refresh_token(self, refresh_token):
         """Exchange the refresh_token at the OP's token endpoint."""
