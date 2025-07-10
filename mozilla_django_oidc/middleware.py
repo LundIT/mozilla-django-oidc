@@ -133,7 +133,7 @@ class SessionRefresh(MiddlewareMixin):
         LOGGER.info("Silent auth failed; logging user out")
         django_logout(request)
         request.session.flush()
-        return HttpResponseRedirect(reverse("oidc_authentication_init"))
+        return HttpResponseRedirect(reverse("oidc_logout"))
 
     def _refresh_with_refresh_token(self, refresh_token):
         """Exchange the refresh_token at the OP's token endpoint."""
