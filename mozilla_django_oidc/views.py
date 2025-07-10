@@ -259,10 +259,12 @@ class OIDCLogoutView(View):
         logout_url = self.redirect_url
 
         if request.user.is_authenticated:
+            print("LOGGING OUT USER:", request.user)
             # Check if a method exists to build the URL to log out the user
             # from the OP.
             logout_from_op = self.get_settings("OIDC_OP_LOGOUT_URL_METHOD", "")
             if logout_from_op:
+                print("Using custom logout method:", logout_from_op)
                 logout_url = import_string(logout_from_op)(request)
         print("LOGOUT URL:", logout_url)
         return HttpResponseRedirect(logout_url)
