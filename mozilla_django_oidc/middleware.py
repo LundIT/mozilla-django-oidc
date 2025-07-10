@@ -22,6 +22,9 @@ from mozilla_django_oidc.utils import (
 
 LOGGER = logging.getLogger(__name__)
 
+class InvalidRefreshTokenError(Exception):
+    """Raised when the OP tells us the refresh_token is no longer valid."""
+    pass
 
 class SessionRefresh(MiddlewareMixin):
     """Refreshes the session with the OIDC RP after expiry seconds.
@@ -113,7 +116,12 @@ class SessionRefresh(MiddlewareMixin):
                 self._update_session_tokens(request, tokens, now)
                 LOGGER.debug("successfully refreshed tokens via refresh_token")
                 return
+            except InvalidRefreshTokenError:
+                # Kick the user fully out if their refresh_token is no good
+                LOGGER.warning("Refresh token invalid – sending user to logout flow")
+                return HttpResponseRedirect(reverse("oidc_logout"))
             except Exception:
+                # Some other network/HTTP error – fall back to silent auth
                 LOGGER.exception("refresh_token grant failed; falling back to silent auth")
 
         # 2) Fallback: silent re‐auth via prompt=none
