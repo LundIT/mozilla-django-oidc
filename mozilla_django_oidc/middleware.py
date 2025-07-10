@@ -1,7 +1,5 @@
 import logging
 import time
-from urllib.error import HTTPError
-
 import requests
 from re import Pattern as re_Pattern
 from urllib.parse import quote, urlencode
@@ -24,9 +22,6 @@ from mozilla_django_oidc.utils import (
 
 LOGGER = logging.getLogger(__name__)
 
-class InvalidRefreshTokenError(Exception):
-    """Raised when the OP tells us the refresh_token is no longer valid."""
-    pass
 
 class SessionRefresh(MiddlewareMixin):
     """Refreshes the session with the OIDC RP after expiry seconds.
@@ -110,21 +105,16 @@ class SessionRefresh(MiddlewareMixin):
 
         LOGGER.debug("id token expired or missing; attempting token refresh")
 
-        # 1) Try the refresh_token grant
-        refresh_token = request.session.get("oidc_refresh_token")
-        if refresh_token:
-            try:
-                tokens = self._refresh_with_refresh_token(refresh_token)
-                self._update_session_tokens(request, tokens, now)
-                LOGGER.debug("successfully refreshed tokens via refresh_token")
-                return
-            except InvalidRefreshTokenError:
-                # Kick the user fully out if their refresh_token is no good
-                LOGGER.warning("Refresh token invalid – sending user to logout flow")
-                return HttpResponseRedirect(reverse("oidc_logout"))
-            except Exception:
-                # Some other network/HTTP error – fall back to silent auth
-                LOGGER.exception("refresh_token grant failed; falling back to silent auth")
+        # # 1) Try the refresh_token grant
+        # refresh_token = request.session.get("oidc_refresh_token")
+        # if refresh_token:
+        #     try:
+        #         tokens = self._refresh_with_refresh_token(refresh_token)
+        #         self._update_session_tokens(request, tokens, now)
+        #         LOGGER.debug("successfully refreshed tokens via refresh_token")
+        #         return
+        #     except Exception:
+        #         LOGGER.exception("refresh_token grant failed; falling back to silent auth")
 
         # 2) Fallback: silent re‐auth via prompt=none
         return self._perform_silent_auth(request)
@@ -140,21 +130,7 @@ class SessionRefresh(MiddlewareMixin):
             data["client_secret"] = self.OIDC_RP_CLIENT_SECRET
 
         resp = requests.post(self.OIDC_OP_TOKEN_ENDPOINT, data=data)
-        try:
-            resp.raise_for_status()
-        except HTTPError as e:
-            # If the OP tells us the refresh_token is invalid, escalate
-            try:
-                error = resp.json().get("error")
-            except ValueError:
-                error = None
-
-            if resp.status_code == 400 and error == "invalid_grant":
-                # means the refresh_token was revoked or expired
-                raise InvalidRefreshTokenError("Refresh token invalid or expired") from e
-            # any other HTTPError, re-raise and let caller decide
-            raise
-
+        resp.raise_for_status()
         return resp.json()
 
     def _update_session_tokens(self, request, tokens, now):
