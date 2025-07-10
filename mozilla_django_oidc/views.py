@@ -43,6 +43,7 @@ class OIDCAuthenticationCallbackView(View):
         return HttpResponseRedirect(self.failure_url)
 
     def login_success(self):
+        print("IN LOGIN SUCCESS OF CALLBACK VIEW")
         # If the user hasn't changed (because this is a session refresh instead of a
         # normal login), don't call login. This prevents invaliding the user's current CSRF token
         request_user = getattr(self.request, "user", None)

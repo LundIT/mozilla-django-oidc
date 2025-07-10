@@ -183,6 +183,7 @@ class OIDCAuthenticationBackend(ModelBackend):
         return resp.json()
 
     def authenticate(self, request, **kwargs):
+        print("IN AUTHENTICATE OF AUTH BACKEND")
         self.request = request
         if not request:
             return None
